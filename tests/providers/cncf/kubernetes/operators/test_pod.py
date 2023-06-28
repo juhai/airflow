@@ -73,7 +73,7 @@ def clear_db():
     yield
 
 
-def create_context(task, persist_to_db=False, map_index=None):
+def create_context(task, persist_to_db=False, map_index=None, job_id=None):
     if task.has_dag():
         dag = task.dag
     else:
@@ -88,6 +88,8 @@ def create_context(task, persist_to_db=False, map_index=None):
     task_instance.dag_run = dag_run
     if map_index is not None:
         task_instance.map_index = map_index
+    if job_id is not None:
+        task_instance.job_id = job_id
     if persist_to_db:
         with create_session() as session:
             session.add(DagModel(dag_id=dag.dag_id))
@@ -651,6 +653,47 @@ class TestKubernetesPodOperator:
             assert pod.metadata.name != name_base
         else:
             assert pod.metadata.name == name_base
+
+    @pytest.mark.parametrize(
+        "job_id_as_suffix,expected_pod_name,add_hostname, expected_hostname",
+        [
+            (False, "test-pod", True, "test-pod"),
+            (True, "test-pod-1234", True, "test-pod-1234"),
+            (False, "test-pod", False, None),
+            (True, "test-pod-1234", False, None),
+        ]
+                             )
+    def test_pod_name_with_job_id(self, job_id_as_suffix, expected_pod_name, add_hostname, expected_hostname):
+        name_base = "test-pod"
+        job_id = "1234"
+        k = KubernetesPodOperator(
+            name=name_base,
+            task_id="task",
+            random_name_suffix=False,
+            job_id_as_suffix=job_id_as_suffix,
+            hostname=name_base if add_hostname else None
+        )
+        context = create_context(k, job_id=job_id)
+        pod = k.build_pod_request_obj(context)
+        assert pod.metadata.name == expected_pod_name
+        assert pod.spec.hostname == expected_hostname
+
+    def test_pod_name_random_suffix_overrides_job_id(self):
+        name_base = "test-pod"
+        job_id = "1234"
+        k = KubernetesPodOperator(
+            name=name_base,
+            task_id="task",
+            random_name_suffix=True,
+            job_id_as_suffix=True,
+            hostname=name_base
+        )
+        context = create_context(k, job_id=job_id)
+        pod = k.build_pod_request_obj(context)
+        assert pod.metadata.name.startswith(name_base)
+        assert pod.metadata.name != name_base
+        assert pod.metadata.name != f"{name_base}-{job_id}"
+        assert pod.spec.hostname == name_base
 
     @pytest.fixture
     def pod_spec(self):
